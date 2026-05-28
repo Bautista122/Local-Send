@@ -1,83 +1,74 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
-import path from 'node:path'
-import dgram from 'node:dgram'
-import net from 'node:net'
-import fs from 'node:fs'
+import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { join } from 'path'
+import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import icon from '../../resources/icon.png?asset'
 
-// --- CONFIGURACIÓN E INICIALIZACIÓN ---
-const UDP_PORT = 53317
-const TCP_PORT = 8080 // Puerto asignado para transferencias pesadas
-let downloadFolder = app.getPath('downloads') // Carpeta por defecto usando paths agnósticos
-let deviceAlias = 'Desktop Node'
-
-// Instancia de la ventana para enviar eventos al Renderer
-let mainWindow: BrowserWindow | null = null
-
-// 1. INICIALIZAR SERVIDOR UDP (Service Discovery)
-function startUdpServer() {
-  const udpServer = dgram.createSocket({ type: 'udp4', reuseAddr: true })
-
-  udpServer.on('listening', () => {
-    udpServer.setBroadcast(true)
-    console.log(`[UDP] Servidor activo en puerto ${UDP_PORT}`)
-    // Notificar a la UI que el servidor está online (LED Verde)
-    mainWindow?.webContents.send('server-status', 'online')
-  })
-
-  udpServer.on('message', (msg, rinfo) => {
-    try {
-      const data = JSON.parse(msg.toString())
-      // Enviamos el dispositivo descubierto directamente al Renderer para la lista dinámica
-      mainWindow?.webContents.send('device-discovered', {
-        id: rinfo.address,
-        alias: data.alias || 'Dispositivo Desconocido',
-        ip: rinfo.address,
-        deviceType: data.deviceType || 'mobile'
-      })
-    } catch (e) {
-      // Ignorar paquetes que no coincidan con nuestro formato JSON
+function createWindow(): void {
+  // Create the browser window.
+  const mainWindow = new BrowserWindow({
+    width: 900,
+    height: 670,
+    show: false,
+    autoHideMenuBar: true,
+    ...(process.platform === 'linux' ? { icon } : {}),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
     }
   })
 
-  udpServer.on('error', (err) => {
-    console.error(`[UDP] Error: ${err.message}`)
-    mainWindow?.webContents.send('server-status', 'offline')
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
   })
 
-  udpServer.bind(UDP_PORT)
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  // HMR for renderer base on electron-vite cli.
+  // Load the remote URL for development or the local html file for production.
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
 }
 
-// 2. INICIALIZAR SERVIDOR TCP (Manejo de Streams No Bloqueantes)
-function startTcpServer() {
-  const tcpServer = net.createServer((socket) => {
-    console.log('[TCP] Conexión entrante para transferencia...')
+// This method will be called when Electron has finished
+// initialization and is ready to create browser windows.
+// Some APIs can only be used after this event occurs.
+app.whenReady().then(() => {
+  // Set app user model id for windows
+  electronApp.setAppUserModelId('com.electron')
 
-    // NOTA: El nombre real del archivo vendrá previamente negociado por WebSockets/IPC.
-    // Usamos de ejemplo un nombre genérico gestionando separadores con path.join (Agnosticismo de rutas)
-    const targetPath = path.join(downloadFolder, 'archivo_recibido.tmp')
-
-    // Implementación de escritura en Stream No Bloqueante
-    const writeStream = fs.createWriteStream(targetPath)
-
-    socket.pipe(writeStream)
-
-    writeStream.on('open', () => {
-      mainWindow?.webContents.send('transfer-started', { speed: 0, progress: 0 })
-    })
-
-    writeStream.on('finish', () => {
-      console.log(`[FS] Archivo guardado con éxito en: ${targetPath}`)
-      mainWindow?.webContents.send('transfer-finished', { success: true, path: targetPath })
-      socket.end()
-    })
-
-    socket.on('error', (err) => {
-      console.error('[TCP] Error durante el streaming:', err)
-      mainWindow?.webContents.send('transfer-error', err.message)
-    })
+  // Default open or close DevTools by F12 in development
+  // and ignore CommandOrControl + R in production.
+  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+  app.on('browser-window-created', (_, window) => {
+    optimizer.watchWindowShortcuts(window)
   })
 
-  tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
-    console.log(`[TCP] Servidor de transferencia escuchando en el puerto ${TCP_PORT}`)
+  // IPC test
+  ipcMain.on('ping', () => console.log('pong'))
+
+  createWindow()
+
+  app.on('activate', function () {
+    // On macOS it's common to re-create a window in the app when the
+    // dock icon is clicked and there are no other windows open.
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
-}
+})
+
+// Quit when all windows are closed, except on macOS. There, it's common
+// for applications and their menu bar to stay active until the user quits
+// explicitly with Cmd + Q.
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+// In this file you can include the rest of your app"s specific main process
+// code. You can also put them in separate files and require them here.

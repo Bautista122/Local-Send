@@ -1,19 +1,22 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge } from 'electron'
+import { electronAPI } from '@electron-toolkit/preload'
 
-// Exponer métodos específicos al Renderer de forma segura
-contextBridge.exposeInMainWorld('localSendAPI', {
-  // Escuchar estado del servidor (Para el LED virtual)
-  onServerStatus: (callback: (status: string) => void) =>
-    ipcRenderer.on('server-status', (_, status) => callback(status)),
+// Custom APIs for renderer
+const api = {}
 
-  // Escuchar cuando aparece un nuevo miembro en la red
-  onDeviceDiscovered: (callback: (device: any) => void) =>
-    ipcRenderer.on('device-discovered', (_, device) => callback(device)),
-
-  // Canales para el Monitor de Transferencia
-  onTransferProgress: (callback: (data: any) => void) =>
-    ipcRenderer.on('transfer-started', (_, data) => callback(data)),
-
-  onTransferFinished: (callback: (data: any) => void) =>
-    ipcRenderer.on('transfer-finished', (_, data) => callback(data))
-})
+// Use `contextBridge` APIs to expose Electron APIs to
+// renderer only if context isolation is enabled, otherwise
+// just add to the DOM global.
+if (process.contextIsolated) {
+  try {
+    contextBridge.exposeInMainWorld('electron', electronAPI)
+    contextBridge.exposeInMainWorld('api', api)
+  } catch (error) {
+    console.error(error)
+  }
+} else {
+  // @ts-ignore (define in dts)
+  window.electron = electronAPI
+  // @ts-ignore (define in dts)
+  window.api = api
+}

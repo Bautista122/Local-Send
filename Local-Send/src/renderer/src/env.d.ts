@@ -1,8 +1,8 @@
-interface Window {
-  localSendAPI: {
-    onServerStatus: (callback: (status: string) => void) => void
-    onDeviceDiscovered: (callback: (device: any) => void) => void
-    onTransferProgress: (callback: (data: any) => void) => void
-    onTransferFinished: (callback: (data: any) => void) => void
-  }
+/// <reference types="vite/client" />
+
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/ban-types
+  const component: DefineComponent<{}, {}, any>
+  export default component
 }
