@@ -1,74 +1,146 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import { app, BrowserWindow, ipcMain } from 'electron'
+import * as net from 'net'
+import * as dgram from 'dgram'
+import * as http from 'http'
+import * as path from 'path'
+import { networkInterfaces } from 'os'
 
-function createWindow(): void {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
+let ventanaPrincipal: BrowserWindow | null = null
+let servidorTcp: net.Server | null = null
+let clienteUdp: dgram.Socket | null = null
+let servidorHttp: http.Server | null = null
+
+const PUERTO_P2P = 53317
+const PUERTO_HTTP = 53318
+
+// Generamos el ID único de ESTA máquina para poder filtrarla
+const MI_ID_UNICO = `pc-${process.platform}-${process.arch}`
+
+function crearVentana(): void {
+  ventanaPrincipal = new BrowserWindow({
     width: 900,
     height: 670,
-    show: false,
-    autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      preload: path.join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (process.env.ELECTRON_RENDERER_URL) {
+    ventanaPrincipal.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    ventanaPrincipal.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  ventanaPrincipal.webContents.on('did-finish-load', () => {
+    inicializarServidorNativo()
+    inicializarDescubrimientoUdp()
+    inicializarApiHttp()
+  })
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+function inicializarServidorNativo(): void {
+  if (servidorTcp) servidorTcp.close()
+
+  servidorTcp = net.createServer((socket) => {
+    socket.on('data', (fragmento) => {
+      console.log(`Recibidos ${fragmento.length} bytes TCP`)
+    })
+  })
+
+  servidorTcp.on('listening', () => {
+    if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+      ventanaPrincipal.webContents.send('estado-servidor', true)
+    }
+  })
+
+  servidorTcp.on('error', () => {
+    if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+      ventanaPrincipal.webContents.send('estado-servidor', false)
+    }
+  })
+
+  servidorTcp.listen(PUERTO_P2P, '0.0.0.0')
+}
+
+function inicializarDescubrimientoUdp(): void {
+  if (clienteUdp) clienteUdp.close()
+
+  clienteUdp = dgram.createSocket('udp4')
+
+  clienteUdp.on('message', (mensaje, infoRemota) => {
+    try {
+      const datos = JSON.parse(mensaje.toString())
+
+      // 🛡️ FILTRO: Si el paquete tiene id, pero es el nuestro, lo ignoramos por completo
+      if (datos.id && datos.id !== MI_ID_UNICO) {
+        if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+          ventanaPrincipal.webContents.send('dispositivo-detectado', {
+            id: datos.id,
+            alias: datos.alias || 'Dispositivo Desconocido',
+            tipo: datos.tipo || 'computadora',
+            direccionIp: infoRemota.address
+          })
+        }
+      }
+    } catch (error) {
+      // Ignorar paquetes ajenos
+    }
+  })
+
+  clienteUdp.bind(PUERTO_P2P, () => {
+    if (clienteUdp) clienteUdp.setBroadcast(true)
+    setInterval(enviarAnuncioUdp, 4000)
+  })
+}
+
+function enviarAnuncioUdp(): void {
+  if (!clienteUdp) return
+
+  const anuncio = JSON.stringify({
+    id: MI_ID_UNICO, // Enviamos nuestro ID único
+    alias: `PC de ${process.env.USER || 'Etec'}`,
+    tipo: 'computadora'
+  })
+
+  const buffer = Buffer.from(anuncio)
+  clienteUdp.send(buffer, 0, buffer.length, PUERTO_P2P, '255.255.255.255')
+}
+
+function inicializarApiHttp(): void {
+  if (servidorHttp) servidorHttp.close()
+
+  servidorHttp = http.createServer((req, res) => {
+    if (req.url === '/ping') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      })
+
+      res.end(
+        JSON.stringify({
+          id: MI_ID_UNICO,
+          alias: `PC de ${process.env.USER || 'Etec'}`,
+          tipo: 'computadora'
+        })
+      )
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+
+  servidorHttp.listen(PUERTO_HTTP, '0.0.0.0')
+}
+
 app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
-
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
-
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
-  createWindow()
-
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  crearVentana()
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (servidorTcp) servidorTcp.close()
+  if (clienteUdp) clienteUdp.close()
+  if (servidorHttp) servidorHttp.close()
+  if (process.platform !== 'darwin') app.quit()
 })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
