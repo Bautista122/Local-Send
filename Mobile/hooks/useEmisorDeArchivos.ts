@@ -1,36 +1,35 @@
-import { useState, useEffect } from "react";
-import NetInfo from "@react-native-community/netinfo";
+import { useState, useEffect, useCallback } from "react";
 import * as DocumentPicker from "expo-document-picker";
+import * as Network from "expo-network";
 
 export function useEmisorDeArchivos() {
-  const [estaConectadoWifi, setEstaConectadoWifi] = useState(false);
-  const [nombreRed, setNombreRed] = useState("Desconocida");
-  const [archivoSeleccionado, setArchivoSeleccionado] = useState<{
-    nombre: string;
-    ruta: string | null;
-  } | null>(null);
+  const [estaConectadoWifi, setEstaConectadoWifi] = useState<boolean>(false);
+  const [nombreRed, setNombreRed] = useState<string>("Buscando Red...");
+  const [archivoSeleccionado, setArchivoSeleccionado] = useState<any>(null);
 
+  // Chequear el estado del Wifi en el aula
   useEffect(() => {
-    // Validar el estado de la red Wi-Fi de forma constante
-    const desuscribirNetInfo = NetInfo.addEventListener((estado) => {
-      const esWifi = estado.type === "wifi" && estado.isConnected === true;
-      setEstaConectadoWifi(esWifi);
+    async function verificarRed() {
+      const estado = await Network.getNetworkStateAsync();
+      setEstaConectadoWifi(
+        estado.type === Network.NetworkStateType.WIFI && estado.isConnected,
+      );
 
-      if (esWifi && estado.details && "ssid" in estado.details) {
-        setNombreRed(estado.details.ssid || "Wi-Fi Local");
+      if (estado.type === Network.NetworkStateType.WIFI) {
+        setNombreRed("Red Escolar Activa");
       } else {
-        setNombreRed("Sin Wi-Fi");
+        setNombreRed("Sin conexión Wi-Fi");
       }
-    });
-
-    return () => desuscribirNetInfo();
+    }
+    verificarRed();
   }, []);
 
-  // Selector de archivos nativo
-  const seleccionarArchivoNativo = async () => {
+  // Función para abrir el selector de archivos nativo del celular
+  const seleccionarArchivoNativo = useCallback(async () => {
     try {
       const resultado = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: false,
+        type: "*/*",
+        copyToCacheDirectory: true,
       });
 
       if (
@@ -38,16 +37,16 @@ export function useEmisorDeArchivos() {
         resultado.assets &&
         resultado.assets.length > 0
       ) {
-        const recurso = resultado.assets[0];
-        setArchivoSeleccionado({
-          nombre: recurso.name,
-          ruta: recurso.uri,
-        });
+        setArchivoSeleccionado(resultado.assets[0]);
+        console.log(
+          "📌 Archivo seleccionado listo para enviar:",
+          resultado.assets[0].name,
+        );
       }
     } catch (error) {
       console.error("Error al seleccionar archivo:", error);
     }
-  };
+  }, []);
 
   return {
     estaConectadoWifi,

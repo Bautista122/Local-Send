@@ -3,20 +3,25 @@ import * as net from 'net'
 import * as dgram from 'dgram'
 import * as http from 'http'
 import * as path from 'path'
-import { networkInterfaces } from 'os'
+import * as fs from 'fs'
 
 let ventanaPrincipal: BrowserWindow | null = null
 let servidorTcp: net.Server | null = null
-let clienteUdp: dgram.Socket | null = null
+let socketUdp: dgram.Socket | null = null
 let servidorHttp: http.Server | null = null
 
+// Variables para la gestión de la transferencia de archivos
 const PUERTO_P2P = 53317
 const PUERTO_HTTP = 53318
+let nombreArchivoEnProgreso = ''
+let descriptorEscrituraStream: fs.WriteStream | null = null
 
-// Generamos el ID único de ESTA máquina para poder filtrarla
+// 🛡️ Declaración de constantes de identidad global
 const MI_ID_UNICO = `pc-${process.platform}-${process.arch}`
+const ALIAS_PC = `PC de ${process.env.USER || 'Estudiante'}`
+const TIPO_DISPOSITIVO = 'desktop'
 
-function crearVentana(): void {
+function crearVentanaPrincipal(): void {
   ventanaPrincipal = new BrowserWindow({
     width: 900,
     height: 670,
@@ -34,18 +39,63 @@ function crearVentana(): void {
   }
 
   ventanaPrincipal.webContents.on('did-finish-load', () => {
-    inicializarServidorNativo()
+    inicializarServidorTcpNativo()
     inicializarDescubrimientoUdp()
     inicializarApiHttp()
   })
 }
 
-function inicializarServidorNativo(): void {
+function inicializarServidorTcpNativo(): void {
   if (servidorTcp) servidorTcp.close()
 
   servidorTcp = net.createServer((socket) => {
+    console.log('[TCP] Conexión entrante para transferencia de datos.')
+
     socket.on('data', (fragmento) => {
-      console.log(`Recibidos ${fragmento.length} bytes TCP`)
+      if (!descriptorEscrituraStream) {
+        const carpetaDescargas = path.join(app.getPath('home'), 'Downloads')
+        const nombreFinal = nombreArchivoEnProgreso || 'archivo_recibido.bin'
+        const rutaCompleta = path.join(carpetaDescargas, nombreFinal)
+
+        console.log(`[TCP] Escribiendo stream de datos en: ${rutaCompleta}`)
+        descriptorEscrituraStream = fs.createWriteStream(rutaCompleta)
+      }
+
+      const bufferCorrecto = descriptorEscrituraStream.write(fragmento)
+
+      if (!bufferCorrecto) {
+        socket.pause()
+        descriptorEscrituraStream.once('drain', () => {
+          socket.resume()
+        })
+      }
+
+      if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+        ventanaPrincipal.webContents.send('bytes-recibidos', fragmento.length)
+      }
+    })
+
+    socket.on('end', () => {
+      console.log('[TCP] Fin del canal de datos. Archivo guardado correctamente.')
+      
+      if (descriptorEscrituraStream) {
+        descriptorEscrituraStream.end()
+        descriptorEscrituraStream = null
+      }
+      
+      nombreArchivoEnProgreso = ''
+      
+      if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+        ventanaPrincipal.webContents.send('transferencia-completada', true)
+      }
+    })
+
+    socket.on('error', (error) => {
+      console.error('[TCP] Error en el socket de transferencia:', error)
+      if (descriptorEscrituraStream) {
+        descriptorEscrituraStream.end()
+        descriptorEscrituraStream = null
+      }
     })
   })
 
@@ -55,92 +105,139 @@ function inicializarServidorNativo(): void {
     }
   })
 
-  servidorTcp.on('error', () => {
-    if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
-      ventanaPrincipal.webContents.send('estado-servidor', false)
-    }
-  })
-
   servidorTcp.listen(PUERTO_P2P, '0.0.0.0')
 }
 
 function inicializarDescubrimientoUdp(): void {
-  if (clienteUdp) clienteUdp.close()
+  if (socketUdp) socketUdp.close()
 
-  clienteUdp = dgram.createSocket('udp4')
+  socketUdp = dgram.createSocket({ type: 'udp4', reuseAddr: true })
 
-  clienteUdp.on('message', (mensaje, infoRemota) => {
+  socketUdp.on('message', (mensaje, infoRemota) => {
     try {
       const datos = JSON.parse(mensaje.toString())
 
-      // 🛡️ FILTRO: Si el paquete tiene id, pero es el nuestro, lo ignoramos por completo
-      if (datos.id && datos.id !== MI_ID_UNICO) {
+      if (datos.id === MI_ID_UNICO) return
+
+      if (datos.evento === 'BUSCAR_DISPOSITIVOS' || datos.event === 'DISCOVER') {
+        const respuesta = Buffer.from(JSON.stringify({
+          evento: 'RESPONDER_BUSQUEDA',
+          id: MI_ID_UNICO,
+          nombre: ALIAS_PC,
+          tipo: TIPO_DISPOSITIVO
+        }))
+
+        socketUdp?.send(respuesta, 0, respuesta.length, infoRemota.port, infoRemota.address)
+      }
+
+      if (datos.evento === 'RESPONDER_BUSQUEDA' || datos.id) {
         if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
           ventanaPrincipal.webContents.send('dispositivo-detectado', {
-            id: datos.id,
-            alias: datos.alias || 'Dispositivo Desconocido',
+            id: datos.id || infoRemota.address,
+            alias: datos.nombre || datos.alias || 'Dispositivo Desconocido',
             tipo: datos.tipo || 'computadora',
             direccionIp: infoRemota.address
           })
         }
       }
     } catch (error) {
-      // Ignorar paquetes ajenos
+      // Ignorar paquetes corruptos
     }
   })
 
-  clienteUdp.bind(PUERTO_P2P, () => {
-    if (clienteUdp) clienteUdp.setBroadcast(true)
-    setInterval(enviarAnuncioUdp, 4000)
+  socketUdp.bind(PUERTO_P2P, () => {
+    if (socketUdp) {
+      socketUdp.setBroadcast(true)
+    }
+    setInterval(enviarAnuncioPeriodicoUdp, 4000)
   })
 }
 
-function enviarAnuncioUdp(): void {
-  if (!clienteUdp) return
+function enviarAnuncioPeriodicoUdp(): void {
+  if (!socketUdp) return
 
   const anuncio = JSON.stringify({
-    id: MI_ID_UNICO, // Enviamos nuestro ID único
-    alias: `PC de ${process.env.USER || 'Etec'}`,
-    tipo: 'computadora'
+    id: MI_ID_UNICO,
+    alias: ALIAS_PC,
+    tipo: TIPO_DISPOSITIVO
   })
 
   const buffer = Buffer.from(anuncio)
-  clienteUdp.send(buffer, 0, buffer.length, PUERTO_P2P, '255.255.255.255')
+  socketUdp.send(buffer, 0, buffer.length, PUERTO_P2P, '255.255.255.255')
 }
 
 function inicializarApiHttp(): void {
   if (servidorHttp) servidorHttp.close()
 
   servidorHttp = http.createServer((req, res) => {
-    if (req.url === '/ping') {
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      })
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    if (req.url === '/ping' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
           id: MI_ID_UNICO,
-          alias: `PC de ${process.env.USER || 'Etec'}`,
-          tipo: 'computadora'
+          alias: ALIAS_PC,
+          tipo: TIPO_DISPOSITIVO
         })
       )
-    } else {
-      res.writeHead(404)
-      res.end()
+      return
     }
+
+    if (req.url === '/transferencia' && req.method === 'POST') {
+      let cuerpo = ''
+      
+      req.on('data', (chunk) => {
+        cuerpo += chunk.toString()
+      })
+
+      req.on('end', () => {
+        try {
+          const metadatosDelArchivo = JSON.parse(cuerpo)
+          console.log('[HTTP] Petición de transferencia recibida:', metadatosDelArchivo)
+
+          nombreArchivoEnProgreso = metadatosDelArchivo.nombre || metadatosDelArchivo.name
+
+          if (ventanaPrincipal && !ventanaPrincipal.isDestroyed()) {
+            ventanaPrincipal.webContents.send('peticion-transferencia', metadatosDelArchivo)
+          }
+
+          ipcMain.once('respuesta-usuario-transferencia', (_evento, respuesta: boolean) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ aceptado: respuesta }))
+          })
+
+        } catch (error) {
+          res.writeHead(400)
+          res.end(JSON.stringify({ error: 'JSON inválido' }))
+        }
+      })
+      return
+    }
+
+    res.writeHead(404)
+    res.end()
   })
 
   servidorHttp.listen(PUERTO_HTTP, '0.0.0.0')
 }
 
+// Inicialización limpia de los eventos del ciclo de vida de Electron
 app.whenReady().then(() => {
-  crearVentana()
+  crearVentanaPrincipal()
 })
 
 app.on('window-all-closed', () => {
   if (servidorTcp) servidorTcp.close()
-  if (clienteUdp) clienteUdp.close()
+  if (socketUdp) socketUdp.close()
   if (servidorHttp) servidorHttp.close()
   if (process.platform !== 'darwin') app.quit()
 })
