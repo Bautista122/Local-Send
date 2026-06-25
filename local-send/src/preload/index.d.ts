@@ -1,8 +1,9 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
-
+export interface InterfazApiElectron {
+  pedirIp: () => Promise<string>
+  onDispositivoDetectado: (callback: (datos: any) => void) => void
+}
 declare global {
   interface Window {
-    electron: ElectronAPI
-    api: unknown
+    api: InterfazApiElectron
   }
 }
