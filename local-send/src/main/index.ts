@@ -12,7 +12,7 @@ function obtenerIpLocal(): string {
   }
   return '127.0.0.1'
 }
-
+//
 ipcMain.handle('obtener-ip', () => obtenerIpLocal())
 
 function createWindow(): void {
