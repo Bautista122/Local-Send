@@ -1,14 +1,16 @@
-// Mobile/App.tsx
+// App.tsx
 import React from "react";
-import { StatusBar } from "expo-status-bar";
-import { View } from "react-native";
-import { ControladorDeEnvioMovil } from "./componentes/controladores/ControladorDeEnvioMovil";
+import { NavigationContainer } from "@react-navigation/native";
+import { ProveedorDeConfiguracion } from "./hooks/useConfiguracionGlobal";
+import { PantallaDeRecepcion } from "./componentes/contenedores/ContenedorDeNavegacionPrincipal";
 
 export default function App() {
   return (
-    <View style={{ flex: 1, backgroundColor: "#111112" }}>
-      <StatusBar style="light" />
-      <ControladorDeEnvioMovil />
-    </View>
+    // Regla 8: El estado global envuelve a toda la app
+    <ProveedorDeConfiguracion>
+      <NavigationContainer>
+        <PantallaDeRecepcion />
+      </NavigationContainer>
+    </ProveedorDeConfiguracion>
   );
 }

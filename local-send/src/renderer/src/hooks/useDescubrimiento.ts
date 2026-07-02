@@ -1,39 +1,27 @@
 import { useState, useEffect } from 'react'
 
-export interface InterfazDispositivo {
-  id: string
-  alias: string
-  tipo: 'computadora' | 'celular' | 'laptop'
-  direccionIp: string
-}
-
-export function useDescubrimiento() {
-  const [dispositivos, setDispositivos] = useState<InterfazDispositivo[]>([])
-  const [estaServidorActivo, setEstaServidorActivo] = useState(false)
+export const useDescubrimiento = () => {
+  const [estaActivo, setEstaActivo] = useState(false)
+  // Agregamos el estado para la lista de dispositivos
+  const [dispositivosEncontrados, setDispositivosEncontrados] = useState<any[]>([])
 
   useEffect(() => {
-    const apiElectron = window.api
-    if (!apiElectron) return
+    // 1. Escuchar estado del servidor (LED)
+    window.apiRed.alCambiarEstadoServidor((valor: boolean) => {
+      setEstaActivo(valor)
+    })
 
-    // Escucha dispositivos detectados por el servidor UDP del proceso Principal (Main)
-    if (apiElectron.onDispositivoDetectado) {
-      apiElectron.onDispositivoDetectado((nuevoDispositivo: InterfazDispositivo) => {
-        setDispositivos((listaPrevia) => {
-          if (listaPrevia.some((dispositivo) => dispositivo.id === nuevoDispositivo.id)) {
-            return listaPrevia
-          }
-          return [...listaPrevia, nuevoDispositivo]
-        })
+    // 2. Escuchar nuevos dispositivos encontrados por el servidor UDP
+    window.apiRed.alDescubrirDispositivo((nuevoDispositivo: any) => {
+      setDispositivosEncontrados((listaActual) => {
+        // Evitamos duplicados comparando por IP
+        const yaExiste = listaActual.some((d) => d.ip === nuevoDispositivo.ip)
+        if (yaExiste) return listaActual
+        return [...listaActual, nuevoDispositivo]
       })
-    }
-
-    // Escucha si el servidor local TCP levantó correctamente
-    if (apiElectron.onEstadoServidor) {
-      apiElectron.onEstadoServidor((estado: boolean) => {
-        setEstaServidorActivo(estado)
-      })
-    }
+    })
   }, [])
 
-  return { dispositivos, estaServidorActivo }
+  // Ahora devolvemos ambos valores
+  return { estaActivo, dispositivosEncontrados }
 }

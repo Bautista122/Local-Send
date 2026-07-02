@@ -1,50 +1,49 @@
 // Mobile/hooks/useDescubrimiento.ts
 import { useState, useEffect } from "react";
-import Zeroconf from "react-native-zeroconf";
+import {
+  ServicioParaDescubrimiento,
+  NodoRed,
+} from "../servicios/ServicioParaDescubrimiento";
 
-interface DispositivoRemoto {
-  id: string;
-  nombre: string;
-  ip: string;
-}
+export const useDescubrimiento = (nombrePropio: string) => {
+  // Regla 8: Tipado del estado usando la interfaz exportada [1]
+  const [dispositivos, setDispositivos] = useState<NodoRed[]>([]);
+  const [estaEscaneando, setEstaEscaneando] = useState(false);
 
-const zeroconf = new Zeroconf();
+  const iniciarBusqueda = async () => {
+    setEstaEscaneando(true);
 
-export function useDescubrimiento() {
-  const [dispositivos, setDispositivos] = useState<DispositivoRemoto[]>([]);
-  const [estaBuscando, setEstaBuscando] = useState<boolean>(false);
+    // 1. Enviamos nuestro anuncio a la red
+    await ServicioParaDescubrimiento.anunciarPresencia(nombrePropio);
 
-  const escanearRedLocal = async () => {
-    zeroconf.on("resolved", (service) => {
-      console.log("Found service:", service.name);
-      console.log("IP addresses:", service.addresses);
-      console.log("Port:", service.port);
-      setDispositivos([
-        ...dispositivos,
-        {
-          id: service.name,
-          nombre: service.name,
-          ip: service.addresses[0],
-        },
-      ]);
-    });
+    // 2. Escuchamos a otros dispositivos
+    const detenerEscucha = ServicioParaDescubrimiento.escucharNodos(
+      (nuevoNodo) => {
+        setDispositivos((prev) => {
+          // Evitamos duplicar dispositivos por IP
+          const existe = prev.find((d) => d.ip === nuevoNodo.ip);
+          if (existe) return prev;
+          return [...prev, nuevoNodo];
+        });
+      },
+    );
 
-    // Start scanning for HTTP services
-    zeroconf.scan("http", "tcp", "local.");
-    setEstaBuscando(true);
+    return detenerEscucha;
   };
 
+  // Regla 3: El hook gestiona el ciclo de vida [4]
   useEffect(() => {
-    escanearRedLocal();
+    let cleanup: (() => void) | undefined;
+
+    iniciarBusqueda().then((detener) => {
+      cleanup = detener;
+    });
+
     return () => {
-      setEstaBuscando(false);
-      zeroconf.stop();
+      if (cleanup) cleanup();
+      setEstaEscaneando(false);
     };
   }, []);
 
-  return {
-    dispositivos,
-    estaBuscando,
-    reiniciarEscaneo: escanearRedLocal,
-  };
-}
+  return { dispositivos, estaEscaneando, iniciarBusqueda };
+};

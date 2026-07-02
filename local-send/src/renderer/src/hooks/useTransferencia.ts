@@ -1,39 +1,29 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
-export interface InterfazEstadoTransferencia {
-  progreso: number // 0 a 100
-  velocidad: number // en MB/s
-  tiempoEstimado: string // ej: "00:05"
-  nombreArchivo: string
-  enProgreso: boolean
-}
+/**
+ * Hook para gestionar la lógica de arrastrar y soltar archivos.
+ * Sigue la Regla 3: Hook fuera del componente para encapsular lógica [4].
+ */
+export const useTransferencia = () => {
+  const [estaArrastrando, setEstaArrastrando] = useState(false)
 
-export function useTransferencia() {
-  const [transferencia, setTransferencia] = useState<InterfazEstadoTransferencia>({
-    progreso: 0,
-    velocidad: 0,
-    tiempoEstimado: '--:--',
-    nombreArchivo: '',
-    enProgreso: false
-  })
-
-  useEffect(() => {
-    const apiElectron = window.api
-    if (!apiElectron) return
-
-    if (apiElectron.onProgresoTransferencia) {
-      apiElectron.onProgresoTransferencia((actualizacion: Partial<InterfazEstadoTransferencia>) => {
-        setTransferencia((estadoPrevio) => ({ ...estadoPrevio, ...actualizacion }))
-      })
-    }
-  }, [])
-
-  const enviarArchivosADispositivo = (idDispositivo: string, rutasDeArchivos: string[]) => {
-    const apiElectron = window.api
-    if (apiElectron?.enviarArchivos) {
-      apiElectron.enviarArchivos(idDispositivo, rutasDeArchivos)
-    }
+  const manejarDragOver = (evento: React.DragEvent) => {
+    evento.preventDefault()
+    setEstaArrastrando(true)
   }
 
-  return { transferencia, enviarArchivosADispositivo }
+  const manejarDragLeave = () => {
+    setEstaArrastrando(false)
+  }
+
+  const manejarDrop = (evento: React.DragEvent) => {
+    evento.preventDefault()
+    setEstaArrastrando(false)
+
+    const archivos = Array.from(evento.dataTransfer.files)
+    console.log('Archivos listos para enviar:', archivos)
+    // Aquí conectaremos luego con la lógica de envío al proceso Main
+  }
+
+  return { estaArrastrando, manejarDragOver, manejarDragLeave, manejarDrop }
 }

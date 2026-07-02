@@ -1,43 +1,38 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
-import * as path from 'path'
-import * as os from 'os'
-import http from 'http'
+import { app, BrowserWindow } from 'electron'
+import { join } from 'node:path'
+import { is } from '@electron-toolkit/utils'
+import { iniciarServidorDescubrimiento } from './descubrimientoServer'
+import { iniciarServidorTransferencia } from './transferenciaServer'
+import { configuracion } from './persistencia'
+import { iniciarMonitoreoRed } from './monitoreoRed'
 
-function obtenerIpLocal(): string {
-  const interfaces = os.networkInterfaces()
-  for (const name in interfaces) {
-    for (const iface of interfaces[name] || []) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address
-    }
-  }
-  return '127.0.0.1'
-}
-//
-ipcMain.handle('obtener-ip', () => obtenerIpLocal())
-
-function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+function crearVentana(): void {
+  const ventanaPrincipal = new BrowserWindow({
     width: 900,
     height: 670,
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
     }
   })
 
-  if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  // Cargamos la UI de React
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    ventanaPrincipal.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    ventanaPrincipal.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  ventanaPrincipal.on('ready-to-show', () => {
+    ventanaPrincipal.show()
+    const alias = configuracion.obtenerAlias()
+    const ruta = configuracion.obtenerCarpetaDescargas()
+
+    // Iniciamos servicios pasando la ventana para la comunicación IPC
+    iniciarServidorDescubrimiento(ventanaPrincipal, alias)
+    iniciarServidorTransferencia(ventanaPrincipal, ruta)
+    iniciarMonitoreoRed(ventanaPrincipal)
+  })
 }
 
-// Servidor HTTP sencillo
-const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  if (req.url === '/ping') {
-    res.writeHead(200)
-    res.end(JSON.stringify({ tipo: 'DESKTOP', nombre: 'PC Servidor' }))
-  }
-})
-server.listen(4000, '0.0.0.0')
-
-app.whenReady().then(createWindow)
+app.whenReady().then(crearVentana)
